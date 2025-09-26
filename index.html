@@ -63,37 +63,29 @@
         var scene = null;
         var sceneToRender = null;
         var createDefaultEngine = function() { return new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true,  disableWebGL2Support: false}); };
-        
+        // Playground 版:Q3 WebXR + 命中测试放置 + 摇杆平移(加载 Assets 面板的 blue_crab.glb)
+// 使用说明:先把 blue_crab.glb 拖到 Playground 的 Assets 面板,再运行本代码
+
 var createScene = async function () {
   const scene = new BABYLON.Scene(engine);
 
-  // 桌面调试:相机+光;进入 AR 后由 XR 相机接管
+  // 桌面调试相机/光:进入 AR 后 XR 相机接管
   scene.createDefaultCameraOrLight(true, true, true);
   scene.createDefaultEnvironment({ createGround: false, environmentTexture: false });
 
-  // ======= 简易 HUD 与 “选择 .glb” 按钮 =======
+  // HUD
   const hud = document.createElement("div");
   hud.style.cssText = "position:fixed;left:8px;top:8px;z-index:99;background:#000a;color:#fff;padding:8px 10px;border-radius:10px;font:12px/1.4 system-ui";
-  hud.innerHTML = "WebXR:对准平面 → 轻触/右手扳机放置;右手摇杆在水平面移动。需 HTTPS 与 AR 设备支持。";
+  hud.innerHTML = "Q3 WebXR:对准平面 → 轻触/右手扳机放置;右手摇杆在水平面移动。需 HTTPS 与 AR 设备支持。";
   document.body.appendChild(hud);
 
-  const pickWrap = document.createElement("div");
-  pickWrap.style.cssText = "position:fixed;left:8px;top:64px;z-index:99";
-  const pickBtn = document.createElement("button");
-  pickBtn.textContent = "选择 .glb";
-  pickBtn.style.cssText = "padding:6px 10px;border-radius:8px;border:0;background:#3b82f6;color:#fff;cursor:pointer";
-  const fileInput = document.createElement("input");
-  fileInput.type = "file"; fileInput.accept = ".glb,model/gltf-binary";
-  fileInput.style.display = "none";
-  pickWrap.appendChild(pickBtn); document.body.appendChild(pickWrap);
-  pickBtn.onclick = () => fileInput.click();
-
-  // ======= WebXR (immersive-ar) & Hit Test =======
+  // 启动 WebXR (immersive-ar)
   const xr = await scene.createDefaultXRExperienceAsync({
     uiOptions: { sessionMode: "immersive-ar" },
     optionalFeatures: true,
   });
 
+  // 启用 Hit Test
   const fm = xr.baseExperience.featuresManager;
   const hitTest = fm.enableFeature(BABYLON.WebXRFeatureName.HIT_TEST, "latest", {
     entityTypes: ["plane", "mesh"],
@@ -103,33 +95,42 @@ var createScene = async function () {
   let lastHitPose = null;
   hitTest.onHitTestResultObservable.add((results) => {
     if (results && results.length) {
-      lastHitPose = results[0].transformationMatrix.clone();
+      lastHitPose = results[0].transformationMatrix.clone(); // world matrix
     }
   });
 
-  // ======= 模型加载与放置 =======
+  // --- 加载模型 ---
+  // 方案 A(推荐):从 Playground 的 Assets 面板加载本地文件
+  const ROOT = "file:";        // 指向 Assets 面板
+  const FILE = "blue_crab.glb"; // 你拖进去的文件名
+
+  // 如果想用远程 URL(需 CORS 允许),把下面两行替换为:
+  // const ROOT = "";
+  // const FILE = "https://your.cdn.com/path/blue_crab.glb";
+
   let originalRoot = null;
-  let placedRoot = null;
-
-  async function loadFromFile(file) {
-    hud.innerHTML = "正在加载:" + file.name;
-    const { meshes } = await BABYLON.SceneLoader.ImportMeshAsync("", "", file, scene);
+  try {
+    const { meshes } = await BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene);
     originalRoot = meshes.find(m => !m.parent) || meshes[0];
-    meshes.forEach(m => m.setEnabled(false)); // 原始层级隐藏,放置时再启用
+    meshes.forEach(m => m.setEnabled(false)); // 隐藏原始层级,放置时再克隆启用
 
-    // 自动缩放至 ~0.35 m 包围盒
+    // 自动缩放到 ~0.35m 包围盒
     const bb0 = originalRoot.getHierarchyBoundingVectors();
     const size = bb0.max.subtract(bb0.min);
     const maxDim = Math.max(size.x, size.y, size.z);
     const scale = maxDim > 0 ? 0.35 / maxDim : 1.0;
     originalRoot.scaling.scaleInPlace(scale);
 
-    // 如需朝向修正:originalRoot.rotation.x = -Math.PI / 2;
+    // 如需朝向修正(例如绕 X 轴 -90°):originalRoot.rotation.x = -Math.PI / 2;
 
     originalRoot.computeWorldMatrix(true);
-    hud.innerHTML = "模型已加载。对准平面,轻触或右手扳机放置。";
+    hud.innerHTML += "<br/>模型加载完成。";
+  } catch (e) {
+    hud.innerHTML += "<br/>模型加载失败,请确认已把 blue_crab.glb 拖到 Assets 面板。";
+    console.error(e);
   }
 
+  let placedRoot = null;
   function placeAtHit() {
     if (!originalRoot || !lastHitPose) return;
 
@@ -137,47 +138,43 @@ var createScene = async function () {
       placedRoot = originalRoot.clone("placedRoot");
       placedRoot.getChildMeshes(true).forEach(m => m.setEnabled(true));
     }
+
     placedRoot.setEnabled(true);
     placedRoot.setPreTransformMatrix(lastHitPose);
 
-    // “落地”:按包围盒 minY 调整高度
+    // 让模型“落地”:按包围盒 minY 修正高度
     const bb = placedRoot.getHierarchyBoundingVectors(true);
     const minY = bb.min.y;
-    if (isFinite(minY)) placedRoot.position.y -= minY;
+    if (isFinite(minY)) {
+      placedRoot.position.y -= minY;
+    }
 
     placedRoot.computeWorldMatrix(true);
   }
 
-  // 文件选择回调(请使用 .glb)
-  fileInput.onchange = () => {
-    const f = fileInput.files && fileInput.files[0];
-    if (!f) return;
-    if (!f.name.toLowerCase().endsWith(".glb")) {
-      hud.innerHTML = "请选择 .glb 文件(单文件二进制)。";
-      return;
-    }
-    loadFromFile(f);
-  };
-
-  // 无手柄:轻触/点击放置
+  // 无手柄:AR 轻触/点击放置
   xr.baseExperience.sessionManager.onSelectObservable.add(() => placeAtHit());
 
   // 右手手柄:扳机放置,摇杆平移
   xr.input.onControllerAddedObservable.add((xrController) => {
     if (xrController.inputSource.handedness !== "right") return;
+
     xrController.onMotionControllerInitObservable.add((mc) => {
+      // 扳机 → 放置
       const trigger = mc.getComponentOfType("trigger");
       trigger.onButtonStateChangedObservable.add(() => {
         if (trigger.pressed) placeAtHit();
       });
 
+      // 摇杆 → 水平平移
       const stick = mc.getComponentOfType("xr-standard-thumbstick");
-      const speed = 0.0025; // 每毫秒移动系数
+      const speed = 0.0025; // 每毫秒的移动系数
       scene.onBeforeRenderObservable.add(() => {
         if (!placedRoot || !stick || !stick.axes) return;
-        const dx = stick.axes.x || 0;
-        const dy = stick.axes.y || 0;
+        const dx = stick.axes.x || 0;   // 左(-)/右(+)
+        const dy = stick.axes.y || 0;   // 前(+)/后(-)
         if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return;
+
         const dt = engine.getDeltaTime();
         const pos = placedRoot.getAbsolutePosition().clone();
         pos.x += dx * speed * dt;
