@@ -63,53 +63,131 @@
         var scene = null;
         var sceneToRender = null;
         var createDefaultEngine = function() { return new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true,  disableWebGL2Support: false}); };
-        var createScene = async function () {
-    // This creates a basic Babylon Scene object (non-mesh)
-    var scene = new BABYLON.Scene(engine);
+        
+var createScene = async function () {
+  const scene = new BABYLON.Scene(engine);
 
-    // This creates and positions a free camera (non-mesh)
-    var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 5, -10), scene);
+  // 桌面调试:相机+光;进入 AR 后由 XR 相机接管
+  scene.createDefaultCameraOrLight(true, true, true);
+  scene.createDefaultEnvironment({ createGround: false, environmentTexture: false });
 
-    // This targets the camera to scene origin
-    camera.setTarget(BABYLON.Vector3.Zero());
+  // ======= 简易 HUD 与 “选择 .glb” 按钮 =======
+  const hud = document.createElement("div");
+  hud.style.cssText = "position:fixed;left:8px;top:8px;z-index:99;background:#000a;color:#fff;padding:8px 10px;border-radius:10px;font:12px/1.4 system-ui";
+  hud.innerHTML = "WebXR:对准平面 → 轻触/右手扳机放置;右手摇杆在水平面移动。需 HTTPS 与 AR 设备支持。";
+  document.body.appendChild(hud);
 
-    // This attaches the camera to the canvas
-    camera.attachControl(canvas, true);
+  const pickWrap = document.createElement("div");
+  pickWrap.style.cssText = "position:fixed;left:8px;top:64px;z-index:99";
+  const pickBtn = document.createElement("button");
+  pickBtn.textContent = "选择 .glb";
+  pickBtn.style.cssText = "padding:6px 10px;border-radius:8px;border:0;background:#3b82f6;color:#fff;cursor:pointer";
+  const fileInput = document.createElement("input");
+  fileInput.type = "file"; fileInput.accept = ".glb,model/gltf-binary";
+  fileInput.style.display = "none";
+  pickWrap.appendChild(pickBtn); document.body.appendChild(pickWrap);
+  pickBtn.onclick = () => fileInput.click();
 
-    // This creates a light, aiming 0,1,0 - to the sky (non-mesh)
-    var light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
-
-    // Default intensity is 1. Let's dim the light a small amount
-    light.intensity = 0.7;
-
-    // Our built-in 'sphere' shape.
-    // var sphere = BABYLON.MeshBuilder.CreateSphere("sphere", {diameter: 2, segments: 32}, scene);
-
-    // Move the sphere upward 1/2 its height
-    // sphere.position.y = 1;
-
-    // Our built-in 'ground' shape.
-
-
-
-    var ground = BABYLON.MeshBuilder.CreateGround("ground4", {width: 6, height: 6}, scene);
-
-    const groundMaterial = new BABYLON.StandardMaterial("Ground Material", scene);
-    groundMaterial.diffuseColor = BABYLON.Color3.Red();
-    let groundTexture = new BABYLON.Texture(Assets.textures.checkerboard_basecolor_png.path, scene);
-    groundMaterial.diffuseTexture = groundTexture;
-    ground.material = groundMaterial;
-
-    BABYLON.ImportMeshAsync(Assets.meshes.Yeti.rootUrl + Assets.meshes.Yeti.filename, scene, { meshNames: "" }).then(function (result) {result.meshes[0].scaling = new BABYLON.Vector3(0.1, 0.1, 0.1);});
-
-    const xr = await scene.createDefaultXRExperienceAsync({
-    // ask for an ar-session
-    uiOptions: {
-      sessionMode: "immersive-ar",
-    },
+  // ======= WebXR (immersive-ar) & Hit Test =======
+  const xr = await scene.createDefaultXRExperienceAsync({
+    uiOptions: { sessionMode: "immersive-ar" },
+    optionalFeatures: true,
   });
 
-    return scene;
+  const fm = xr.baseExperience.featuresManager;
+  const hitTest = fm.enableFeature(BABYLON.WebXRFeatureName.HIT_TEST, "latest", {
+    entityTypes: ["plane", "mesh"],
+    offsetRay: new BABYLON.Ray(new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, 0, 1), 20),
+  });
+
+  let lastHitPose = null;
+  hitTest.onHitTestResultObservable.add((results) => {
+    if (results && results.length) {
+      lastHitPose = results[0].transformationMatrix.clone();
+    }
+  });
+
+  // ======= 模型加载与放置 =======
+  let originalRoot = null;
+  let placedRoot = null;
+
+  async function loadFromFile(file) {
+    hud.innerHTML = "正在加载:" + file.name;
+    const { meshes } = await BABYLON.SceneLoader.ImportMeshAsync("", "", file, scene);
+    originalRoot = meshes.find(m => !m.parent) || meshes[0];
+    meshes.forEach(m => m.setEnabled(false)); // 原始层级隐藏,放置时再启用
+
+    // 自动缩放至 ~0.35 m 包围盒
+    const bb0 = originalRoot.getHierarchyBoundingVectors();
+    const size = bb0.max.subtract(bb0.min);
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const scale = maxDim > 0 ? 0.35 / maxDim : 1.0;
+    originalRoot.scaling.scaleInPlace(scale);
+
+    // 如需朝向修正:originalRoot.rotation.x = -Math.PI / 2;
+
+    originalRoot.computeWorldMatrix(true);
+    hud.innerHTML = "模型已加载。对准平面,轻触或右手扳机放置。";
+  }
+
+  function placeAtHit() {
+    if (!originalRoot || !lastHitPose) return;
+
+    if (!placedRoot) {
+      placedRoot = originalRoot.clone("placedRoot");
+      placedRoot.getChildMeshes(true).forEach(m => m.setEnabled(true));
+    }
+    placedRoot.setEnabled(true);
+    placedRoot.setPreTransformMatrix(lastHitPose);
+
+    // “落地”:按包围盒 minY 调整高度
+    const bb = placedRoot.getHierarchyBoundingVectors(true);
+    const minY = bb.min.y;
+    if (isFinite(minY)) placedRoot.position.y -= minY;
+
+    placedRoot.computeWorldMatrix(true);
+  }
+
+  // 文件选择回调(请使用 .glb)
+  fileInput.onchange = () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    if (!f.name.toLowerCase().endsWith(".glb")) {
+      hud.innerHTML = "请选择 .glb 文件(单文件二进制)。";
+      return;
+    }
+    loadFromFile(f);
+  };
+
+  // 无手柄:轻触/点击放置
+  xr.baseExperience.sessionManager.onSelectObservable.add(() => placeAtHit());
+
+  // 右手手柄:扳机放置,摇杆平移
+  xr.input.onControllerAddedObservable.add((xrController) => {
+    if (xrController.inputSource.handedness !== "right") return;
+    xrController.onMotionControllerInitObservable.add((mc) => {
+      const trigger = mc.getComponentOfType("trigger");
+      trigger.onButtonStateChangedObservable.add(() => {
+        if (trigger.pressed) placeAtHit();
+      });
+
+      const stick = mc.getComponentOfType("xr-standard-thumbstick");
+      const speed = 0.0025; // 每毫秒移动系数
+      scene.onBeforeRenderObservable.add(() => {
+        if (!placedRoot || !stick || !stick.axes) return;
+        const dx = stick.axes.x || 0;
+        const dy = stick.axes.y || 0;
+        if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return;
+        const dt = engine.getDeltaTime();
+        const pos = placedRoot.getAbsolutePosition().clone();
+        pos.x += dx * speed * dt;
+        pos.z += dy * speed * dt;
+        placedRoot.setAbsolutePosition(pos);
+      });
+    });
+  });
+
+  return scene;
 };
                 window.initFunction = async function() {
                     
