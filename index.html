@@ -101,7 +101,7 @@ var createScene = async function () {
 
   // --- 加载模型 ---
   // 方案 A(推荐):从 Playground 的 Assets 面板加载本地文件
-  const ROOT = "file:";        // 指向 Assets 面板
+  const ROOT = "./";        // 指向 Assets 面板
   const FILE = "blue_crab.glb"; // 你拖进去的文件名
 
   // 如果想用远程 URL(需 CORS 允许),把下面两行替换为:
@@ -219,3 +219,4 @@ var createScene = async function () {
         </script>
     </body>
 </html>
+
