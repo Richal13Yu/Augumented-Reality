@@ -64,106 +64,123 @@
         var sceneToRender = null;
         var createDefaultEngine = function() { return new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true,  disableWebGL2Support: false}); };
         var createScene = function () {
-    // 基础场景
-    var scene = new BABYLON.Scene(engine);
-
-    var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 5, -10), scene);
-    camera.setTarget(BABYLON.Vector3.Zero());
-    camera.attachControl(canvas, true);
-
-    var light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
-    light.intensity = 0.7;
-
-    // --- 你的“球”:作为预制体,默认隐藏。每次放置会 clone 一个实例 ---
-    var spherePrefab = BABYLON.MeshBuilder.CreateSphere("spherePrefab", { diameter: 2, segments: 32 }, scene);
-    spherePrefab.position.y = 1;
-    spherePrefab.rotationQuaternion = new BABYLON.Quaternion();
-    spherePrefab.isVisible = false;
-
-    // 你的地面(桌面预览用;进入 AR 可选移除)
-    var ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 6, height: 6 }, scene);
-
-    // --- 命中可视化标记圈 ---
-    var marker = BABYLON.MeshBuilder.CreateTorus("marker", { diameter: 0.6, thickness: 0.08 }, scene);
-    marker.rotationQuaternion = new BABYLON.Quaternion();
-    marker.isVisible = false;
-
-    // ===== 启动 WebXR (immersive-ar) =====
-    scene.createDefaultXRExperienceAsync({
-        uiOptions: { sessionMode: "immersive-ar" },
-        inputOptions: { doNotLoadControllerMeshes: true },
-        optionalFeatures: true
-    }).then((xr) => {
-
-        const fm = xr.baseExperience.featuresManager;
-
-        // Hit Test(命中检测)
-        const hitTest = fm.enableFeature(BABYLON.WebXRHitTest.Name, "latest");
-
-        // Anchors(若可用用于更稳定位)
-        const anchors = fm.enableFeature(BABYLON.WebXRAnchorSystem.Name, "latest");
-
-        // 可选:进入 AR 时移除环境(避免地面/天空盒挡视)
-        // fm.enableFeature(BABYLON.WebXRBackgroundRemover.Name);
-
-        let lastHit = null;
-
-        // 实时命中结果:更新 marker 的位姿
-        hitTest.onHitTestResultObservable.add((results) => {
-            if (results && results.length) {
-                lastHit = results[0];
-                marker.isVisible = true;
-                lastHit.transformationMatrix.decompose(marker.scaling, marker.rotationQuaternion, marker.position);
-            } else {
-                marker.isVisible = false;
-                lastHit = null;
-            }
-        });
-
-        // 放置函数:优先使用 Anchors;否则直接在命中位姿克隆一个球
-        async function placeAtHit() {
-            if (!lastHit) return;
-
-            if (anchors) {
-                const anchor = await anchors.addAnchorPointUsingHitTestResultAsync(lastHit);
-                const node = spherePrefab.clone("sphere_" + Date.now());
-                node.rotationQuaternion = node.rotationQuaternion || new BABYLON.Quaternion();
-                node.isVisible = true;
-                anchor.attachedNode = node;  // 交给系统持续更新它的位置与朝向
-            } else {
-                const node = spherePrefab.clone("sphere_" + Date.now());
-                node.rotationQuaternion = node.rotationQuaternion || new BABYLON.Quaternion();
-                lastHit.transformationMatrix.decompose(node.scaling, node.rotationQuaternion, node.position);
-                node.isVisible = true;
-            }
-        }
-
-        // 右手手柄 Trigger:放置
-        xr.input.onControllerAddedObservable.add((xrController) => {
-            if (xrController.inputSource.handedness !== "right") return;
-            xrController.onMotionControllerInitObservable.add((mc) => {
-                const trigger = mc.getComponentOfType("trigger");
-                if (trigger) {
-                    trigger.onButtonStateChangedObservable.add(() => {
-                        if (trigger.pressed && xr.baseExperience.state === BABYLON.WebXRState.IN_XR) {
-                            placeAtHit();
-                        }
-                    });
+            var scene = new BABYLON.Scene(engine);
+            var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 5, -10), scene);
+            camera.setTarget(BABYLON.Vector3.Zero());
+            camera.attachControl(canvas, true);
+            camera.inputs.removeByType("FreeCameraGamepadInput");
+            var light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+            light.intensity = 0.7;
+        
+            var GLB_URL = "./blue_crab.glb";
+            var container = null;
+            BABYLON.SceneLoader.LoadAssetContainer("", GLB_URL, scene, function (c) { container = c; });
+        
+            var marker = BABYLON.MeshBuilder.CreateTorus("marker", { diameter: 0.6, thickness: 0.08 }, scene);
+            marker.rotationQuaternion = new BABYLON.Quaternion();
+            marker.isVisible = false;
+        
+            scene.createDefaultXRExperienceAsync({
+                uiOptions: { sessionMode: "immersive-ar" },
+                inputOptions: { doNotLoadControllerMeshes: true },
+                optionalFeatures: true
+            }).then((xr) => {
+                const fm = xr.baseExperience.featuresManager;
+                const hitTest = fm.enableFeature(BABYLON.WebXRHitTest.Name, "latest");
+                const anchors = fm.enableFeature(BABYLON.WebXRAnchorSystem.Name, "latest");
+        
+                let lastHit = null;
+                let activeWrapper = null;
+                let activePivot = null;
+                const speed = 0.0025, deadzone = 0.06, MODEL_SCALE = 0.02;
+        
+                hitTest.onHitTestResultObservable.add((results) => {
+                    if (results && results.length) {
+                        lastHit = results[0];
+                        marker.isVisible = true;
+                        lastHit.transformationMatrix.decompose(marker.scaling, marker.rotationQuaternion, marker.position);
+                    } else {
+                        marker.isVisible = false;
+                        lastHit = null;
+                    }
+                });
+        
+                async function createWrapperAtHit() {
+                    if (!container || !lastHit) return;
+                    const inst = container.instantiateModelsToScene(n => "blue_crab_" + Date.now() + "_" + n, false);
+                    const wrapper = new BABYLON.TransformNode("modelRoot_" + Date.now(), scene);
+                    inst.rootNodes.forEach(n => n.setParent(wrapper));
+                    wrapper.rotationQuaternion = new BABYLON.Quaternion();
+                    wrapper.scaling.setAll(MODEL_SCALE);
+                    if (anchors) {
+                        const pivot = new BABYLON.TransformNode("anchorPivot_" + Date.now(), scene);
+                        const anchor = await anchors.addAnchorPointUsingHitTestResultAsync(lastHit);
+                        anchor.attachedNode = pivot;
+                        wrapper.parent = pivot;
+                        activePivot = pivot;
+                    } else {
+                        const s = new BABYLON.Vector3(), r = new BABYLON.Quaternion(), t = new BABYLON.Vector3();
+                        lastHit.transformationMatrix.decompose(s, r, t);
+                        wrapper.rotationQuaternion.copyFrom(r);
+                        wrapper.position.copyFrom(t);
+                    }
+                    activeWrapper = wrapper;
                 }
+        
+                async function moveWrapperToHit() {
+                    if (!activeWrapper || !lastHit) return;
+                    if (anchors) {
+                        const newPivot = new BABYLON.TransformNode("anchorPivot_" + Date.now(), scene);
+                        const anchor = await anchors.addAnchorPointUsingHitTestResultAsync(lastHit);
+                        anchor.attachedNode = newPivot;
+                        activeWrapper.parent = newPivot;
+                        if (activePivot) activePivot.dispose();
+                        activePivot = newPivot;
+                    } else {
+                        const s = new BABYLON.Vector3(), r = new BABYLON.Quaternion(), t = new BABYLON.Vector3();
+                        lastHit.transformationMatrix.decompose(s, r, t);
+                        activeWrapper.rotationQuaternion.copyFrom(r);
+                        activeWrapper.setAbsolutePosition(t);
+                    }
+                }
+        
+                async function onTrigger() {
+                    if (!activeWrapper) await createWrapperAtHit();
+                    else await moveWrapperToHit();
+                }
+        
+                xr.input.onControllerAddedObservable.add((xrController) => {
+                    if (xrController.inputSource.handedness !== "right") return;
+                    xrController.onMotionControllerInitObservable.add((mc) => {
+                        const trigger = mc.getComponentOfType("trigger");
+                        if (trigger) {
+                            trigger.onButtonStateChangedObservable.add(() => {
+                                if (trigger.pressed && xr.baseExperience.state === BABYLON.WebXRState.IN_XR) onTrigger();
+                            });
+                        }
+                        const stick = mc.getComponentOfType("xr-standard-thumbstick");
+                        scene.onBeforeRenderObservable.add(() => {
+                            if (!activeWrapper) return;
+                            let ax = 0, ay = 0;
+                            if (stick && stick.axes) { ax = stick.axes.x || 0; ay = stick.axes.y || 0; }
+                            else if (xrController.inputSource && xrController.inputSource.gamepad && xrController.inputSource.gamepad.axes) {
+                                const a = xrController.inputSource.gamepad.axes; ax = (a[0] || 0); ay = (a[1] || 0);
+                            }
+                            if (Math.abs(ax) < deadzone) ax = 0;
+                            if (Math.abs(ay) < deadzone) ay = 0;
+                            if (ax === 0 && ay === 0) return;
+                            const dt = engine.getDeltaTime();
+                            const p = activeWrapper.getAbsolutePosition().clone();
+                            p.x += ax * speed * dt;
+                            p.z += ay * speed * dt;
+                            activeWrapper.setAbsolutePosition(p);
+                        });
+                    });
+                });
             });
-        });
-
-        // 触屏点击:放置(手机/平板/Quest 触摸)
-        scene.onPointerDown = () => {
-            if (xr.baseExperience.state === BABYLON.WebXRState.IN_XR) {
-                placeAtHit();
-            }
+        
+            return scene;
         };
-
-    }); // end of createDefaultXRExperienceAsync.then
-
-    return scene;
-};
                 window.initFunction = async function() {
                     
                     
