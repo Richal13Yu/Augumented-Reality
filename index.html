@@ -1,141 +1,198 @@
-<script>
-  (function () {
-    const canvas = document.getElementById("renderCanvas");
-    const engine = new BABYLON.Engine(canvas, true);
+<!doctype html>
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
 
-    async function createScene() {
-      const scene = new BABYLON.Scene(engine);
+        <title>Babylon.js sample code</title>
 
-      scene.createDefaultCameraOrLight(true, true, true);
-      scene.createDefaultEnvironment({ createGround: false, environmentTexture: false });
+        <!-- Babylon.js -->
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.6.2/dat.gui.min.js"></script>
+        <script src="https://assets.babylonjs.com/generated/Assets.js"></script>
+        <script src="https://cdn.babylonjs.com/recast.js"></script>
+        <script src="https://cdn.babylonjs.com/ammo.js"></script>
+        <script src="https://cdn.babylonjs.com/havok/HavokPhysics_umd.js"></script>
+        <script src="https://cdn.babylonjs.com/cannon.js"></script>
+        <script src="https://cdn.babylonjs.com/Oimo.js"></script>
+        <script src="https://cdn.babylonjs.com/earcut.min.js"></script>
+        <script src="https://cdn.babylonjs.com/babylon.js"></script>
+        <script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
+        <script src="https://cdn.babylonjs.com/proceduralTexturesLibrary/babylonjs.proceduralTextures.min.js"></script>
+        <script src="https://cdn.babylonjs.com/postProcessesLibrary/babylonjs.postProcess.min.js"></script>
+        <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.js"></script>
+        <script src="https://cdn.babylonjs.com/serializers/babylonjs.serializers.min.js"></script>
+        <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+        <script src="https://cdn.babylonjs.com/addons/babylonjs.addons.min.js"></script>
+        <script src="https://cdn.babylonjs.com/inspector/babylon.inspector.bundle.js"></script>
 
-      // Invisible ground for desktop picking
-      const pickGround = BABYLON.MeshBuilder.CreateGround("pickGround", { width: 100, height: 100 }, scene);
-      pickGround.isPickable = true;
-      pickGround.isVisible = false;
-      pickGround.position.y = 0;
+        <style>
+            html,
+            body {
+                overflow: hidden;
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+            }
 
-      const xr = await scene.createDefaultXRExperienceAsync({
+            #renderCanvas {
+                width: 100%;
+                height: 100%;
+                touch-action: none;
+            }
+
+            #canvasZone {
+                width: 100%;
+                height: 100%;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="canvasZone"><canvas id="renderCanvas"></canvas></div>
+        <script>
+                    var canvas = document.getElementById("renderCanvas");
+
+                    var startRenderLoop = function (engine, canvas) {
+                        engine.runRenderLoop(function () {
+                            if (sceneToRender && sceneToRender.activeCamera) {
+                                sceneToRender.render();
+                            }
+                        });
+                    }
+
+                    var engine = null;
+        var scene = null;
+        var sceneToRender = null;
+        var createDefaultEngine = function() { return new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true,  disableWebGL2Support: false}); };
+        var createScene = function () {
+    // 基础场景
+    var scene = new BABYLON.Scene(engine);
+
+    var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 5, -10), scene);
+    camera.setTarget(BABYLON.Vector3.Zero());
+    camera.attachControl(canvas, true);
+
+    var light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+    light.intensity = 0.7;
+
+    // --- 你的“球”:作为预制体,默认隐藏。每次放置会 clone 一个实例 ---
+    var spherePrefab = BABYLON.MeshBuilder.CreateSphere("spherePrefab", { diameter: 2, segments: 32 }, scene);
+    spherePrefab.position.y = 1;
+    spherePrefab.rotationQuaternion = new BABYLON.Quaternion();
+    spherePrefab.isVisible = false;
+
+    // 你的地面(桌面预览用;进入 AR 可选移除)
+    var ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 6, height: 6 }, scene);
+
+    // --- 命中可视化标记圈 ---
+    var marker = BABYLON.MeshBuilder.CreateTorus("marker", { diameter: 0.6, thickness: 0.08 }, scene);
+    marker.rotationQuaternion = new BABYLON.Quaternion();
+    marker.isVisible = false;
+
+    // ===== 启动 WebXR (immersive-ar) =====
+    scene.createDefaultXRExperienceAsync({
         uiOptions: { sessionMode: "immersive-ar" },
+        inputOptions: { doNotLoadControllerMeshes: true },
         optionalFeatures: true
-      });
+    }).then((xr) => {
 
-      const fm = xr.baseExperience.featuresManager;
-      const hitTest = fm.enableFeature(BABYLON.WebXRFeatureName.HIT_TEST, "latest", {
-        entityTypes: ["plane", "mesh"],
-        offsetRay: new BABYLON.Ray(new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, 0, 1), 20)
-      });
+        const fm = xr.baseExperience.featuresManager;
 
-      let lastHitPose = null;
-      hitTest.onHitTestResultObservable.add(results => {
-        if (results && results.length) lastHitPose = results[0].transformationMatrix.clone();
-      });
+        // Hit Test(命中检测)
+        const hitTest = fm.enableFeature(BABYLON.WebXRHitTest.Name, "latest");
 
-      const ROOT = "./";
-      const FILE = "blue_crab.glb";
+        // Anchors(若可用用于更稳定位)
+        const anchors = fm.enableFeature(BABYLON.WebXRAnchorSystem.Name, "latest");
 
-      let originalRoot = null;
-      try {
-        const { meshes } = await BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene);
-        originalRoot = meshes.find(m => !m.parent) || meshes[0];
-        meshes.forEach(m => m.setEnabled(false));
-        const bb0 = originalRoot.getHierarchyBoundingVectors();
-        const size = bb0.max.subtract(bb0.min);
-        const maxDim = Math.max(size.x, size.y, size.z);
-        const scale = maxDim > 0 ? 0.35 / maxDim : 1.0;
-        originalRoot.scaling.scaleInPlace(scale);
-        originalRoot.computeWorldMatrix(true);
-      } catch (e) {
-        console.error("Failed to load blue_crab.glb. Ensure it is in the same folder and not an LFS pointer.", e);
-      }
+        // 可选:进入 AR 时移除环境(避免地面/天空盒挡视)
+        // fm.enableFeature(BABYLON.WebXRBackgroundRemover.Name);
 
-      let placedRoot = null;
-      function ensurePlacedRoot() {
-        if (!originalRoot) return null;
-        if (!placedRoot) {
-          placedRoot = originalRoot.clone("placedRoot");
-          placedRoot.getChildMeshes(true).forEach(m => m.setEnabled(true));
-          placedRoot.setEnabled(true);
-        }
-        return placedRoot;
-      }
+        let lastHit = null;
 
-      function dropToPlaneY0(mesh) {
-        const bb = mesh.getHierarchyBoundingVectors(true);
-        const minY = bb.min.y;
-        if (isFinite(minY)) mesh.position.y -= minY;
-        mesh.computeWorldMatrix(true);
-      }
-
-      function placeAtHit() {
-        if (!originalRoot || !lastHitPose) return;
-        const m = ensurePlacedRoot();
-        if (!m) return;
-        m.setPreTransformMatrix(lastHitPose);
-        dropToPlaneY0(m);
-      }
-
-      function placeAtPosition(pos) {
-        if (!originalRoot || !pos) return;
-        const m = ensurePlacedRoot();
-        if (!m) return;
-        m.setAbsolutePosition(pos.clone());
-        dropToPlaneY0(m);
-      }
-
-      // Tap in AR
-      xr.baseExperience.sessionManager.onSelectObservable.add(() => placeAtHit());
-
-      // Right controller: trigger & thumbstick
-      xr.input.onControllerAddedObservable.add(xrController => {
-        if (xrController.inputSource.handedness !== "right") return;
-        xrController.onMotionControllerInitObservable.add(mc => {
-          const trigger = mc.getComponentOfType("trigger");
-          trigger.onButtonStateChangedObservable.add(() => { if (trigger.pressed) placeAtHit(); });
-
-          const stick = mc.getComponentOfType("xr-standard-thumbstick");
-          const speed = 0.0025;
-          scene.onBeforeRenderObservable.add(() => {
-            if (!placedRoot || !stick || !stick.axes) return;
-            const dx = stick.axes.x || 0;
-            const dy = stick.axes.y || 0;
-            if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return;
-            const dt = engine.getDeltaTime();
-            const pos = placedRoot.getAbsolutePosition().clone();
-            pos.x += dx * speed * dt;
-            pos.z += dy * speed * dt;
-            placedRoot.setAbsolutePosition(pos);
-          });
+        // 实时命中结果:更新 marker 的位姿
+        hitTest.onHitTestResultObservable.add((results) => {
+            if (results && results.length) {
+                lastHit = results[0];
+                marker.isVisible = true;
+                lastHit.transformationMatrix.decompose(marker.scaling, marker.rotationQuaternion, marker.position);
+            } else {
+                marker.isVisible = false;
+                lastHit = null;
+            }
         });
-      });
 
-      // Mouse/touch outside AR: click to place
-      scene.onPointerDown = function () {
-        const inXR = xr.baseExperience && xr.baseExperience.state === BABYLON.WebXRState.IN_XR;
-        if (inXR) {
-          placeAtHit();
-          return;
+        // 放置函数:优先使用 Anchors;否则直接在命中位姿克隆一个球
+        async function placeAtHit() {
+            if (!lastHit) return;
+
+            if (anchors) {
+                const anchor = await anchors.addAnchorPointUsingHitTestResultAsync(lastHit);
+                const node = spherePrefab.clone("sphere_" + Date.now());
+                node.rotationQuaternion = node.rotationQuaternion || new BABYLON.Quaternion();
+                node.isVisible = true;
+                anchor.attachedNode = node;  // 交给系统持续更新它的位置与朝向
+            } else {
+                const node = spherePrefab.clone("sphere_" + Date.now());
+                node.rotationQuaternion = node.rotationQuaternion || new BABYLON.Quaternion();
+                lastHit.transformationMatrix.decompose(node.scaling, node.rotationQuaternion, node.position);
+                node.isVisible = true;
+            }
         }
-        const pick = scene.pick(scene.pointerX, scene.pointerY);
-        if (pick && pick.hit && pick.pickedPoint) {
-          placeAtPosition(pick.pickedPoint);
-        } else if (scene.activeCamera) {
-          // Fallback: intersect y=0 plane
-          const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, BABYLON.Matrix.Identity(), scene.activeCamera);
-          if (ray && Math.abs(ray.direction.y) > 1e-6) {
-            const t = -ray.origin.y / ray.direction.y;
-            if (t > 0) placeAtPosition(ray.origin.add(ray.direction.scale(t)));
-          }
-        }
-      };
 
-      return scene;
-    }
+        // 右手手柄 Trigger:放置
+        xr.input.onControllerAddedObservable.add((xrController) => {
+            if (xrController.inputSource.handedness !== "right") return;
+            xrController.onMotionControllerInitObservable.add((mc) => {
+                const trigger = mc.getComponentOfType("trigger");
+                if (trigger) {
+                    trigger.onButtonStateChangedObservable.add(() => {
+                        if (trigger.pressed && xr.baseExperience.state === BABYLON.WebXRState.IN_XR) {
+                            placeAtHit();
+                        }
+                    });
+                }
+            });
+        });
 
-    createScene().then(scene => {
-      engine.runRenderLoop(() => scene.render());
-    });
+        // 触屏点击:放置(手机/平板/Quest 触摸)
+        scene.onPointerDown = () => {
+            if (xr.baseExperience.state === BABYLON.WebXRState.IN_XR) {
+                placeAtHit();
+            }
+        };
 
-    window.addEventListener("resize", () => engine.resize());
-  })();
-</script>
+    }); // end of createDefaultXRExperienceAsync.then
+
+    return scene;
+};
+                window.initFunction = async function() {
+                    
+                    
+                    
+                    var asyncEngineCreation = async function() {
+                        try {
+                        return createDefaultEngine();
+                        } catch(e) {
+                        console.log("the available createEngine function failed. Creating the default engine instead");
+                        return createDefaultEngine();
+                        }
+                    }
+
+                    window.engine = await asyncEngineCreation();
+                    
+                    const engineOptions = window.engine.getCreationOptions?.();
+                    if (!engineOptions || engineOptions.audioEngine !== false) {
+                        
+                    }
+        if (!engine) throw 'engine should not be null.';
+        startRenderLoop(engine, canvas);
+        window.scene = createScene();};
+        initFunction().then(() => {sceneToRender = scene
+                    });
+
+                    // Resize
+                    window.addEventListener("resize", function () {
+                        engine.resize();
+                    });
+        </script>
+    </body>
+</html>
